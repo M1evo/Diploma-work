@@ -4,11 +4,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Система субъективной оценки качества изображений методом попарных сравнений">
+    <meta name="description"
+        content="Система субъективной оценки качества изображений методом попарных сравнений">
     <title>Система попарного сравнения изображений</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+        rel="stylesheet">
     <link rel="stylesheet" href="style.css">
 </head>
 
@@ -27,8 +30,8 @@
             <form id="login-form" autocomplete="off">
                 <div class="input-group">
                     <label for="nickname-input">Ваш никнейм</label>
-                    <input type="text" id="nickname-input" placeholder="Например: ivan" required minlength="2"
-                        maxlength="32" pattern="[A-Za-zА-Яа-яёЁ0-9_\-]+">
+                    <input type="text" id="nickname-input" placeholder="Например: ivan" required
+                        minlength="2" maxlength="32" pattern="[A-Za-zА-Яа-яёЁ0-9_\-]+">
                     <span class="input-hint">Латиница, кириллица, цифры, _, -</span>
                 </div>
                 <button type="submit" id="login-btn" class="btn btn-primary">
@@ -51,66 +54,268 @@
             <div class="top-bar-right">
                 <span id="user-badge" class="badge"></span>
                 <span id="counter-badge" class="badge badge-accent">0 оценок</span>
+                <button id="bt-btn" class="btn btn-ghost btn-sm" title="Рейтинги BT">🏆</button>
+                <button id="results-btn" class="btn btn-ghost btn-sm" title="Граф сравнений">📊</button>
                 <button id="logout-btn" class="btn btn-ghost btn-sm" title="Выйти">✕</button>
             </div>
         </header>
 
-        <main class="comparison-area">
-            <p class="instruction">Какое изображение имеет <strong>лучшее качество</strong>?</p>
+        <div class="comparison-layout">
+            <main class="comparison-area">
+                <p class="instruction">Сравните два изображения по каждому из критериев:</p>
 
-            <div class="images-row">
-                <!-- Левое изображение -->
-                <div class="image-card glass" id="card-left">
-                    <div class="image-wrapper">
-                        <img id="img-left" src="" alt="Изображение A">
-                        <div class="image-label">A</div>
+                <div class="images-row">
+                    <div class="image-card glass" id="card-left">
+                        <div class="image-wrapper">
+                            <img id="img-left" src="" alt="Изображение A">
+                            <div class="image-label">A</div>
+                        </div>
+                        <p class="image-path" id="path-left"></p>
                     </div>
-                    <p class="image-path" id="path-left"></p>
+
+                    <div class="vs-divider">VS</div>
+
+                    <div class="image-card glass" id="card-right">
+                        <div class="image-wrapper">
+                            <img id="img-right" src="" alt="Изображение B">
+                            <div class="image-label">B</div>
+                        </div>
+                        <p class="image-path" id="path-right"></p>
+                    </div>
                 </div>
 
-                <div class="vs-divider">VS</div>
+                <!-- Список критериев с тремя кнопками для каждого -->
+                <div id="criteria-rows" class="criteria-rows"></div>
 
-                <!-- Правое изображение -->
-                <div class="image-card glass" id="card-right">
-                    <div class="image-wrapper">
-                        <img id="img-right" src="" alt="Изображение B">
-                        <div class="image-label">B</div>
-                    </div>
-                    <p class="image-path" id="path-right"></p>
+                <div class="round-controls">
+                    <button id="next-pair-btn" class="btn btn-primary" disabled>
+                        Следующая пара
+                        <span class="btn-arrow">→</span>
+                    </button>
+                    <span id="round-progress" class="round-progress">0 / 0 критериев оценено</span>
                 </div>
-            </div>
 
-            <!-- Панель голосования -->
-            <div class="vote-panel">
-                <button class="btn btn-vote btn-left" id="vote-left" data-vote="<" title="Левое лучше">
-                    <span class="vote-icon">◀</span>
-                    <span class="vote-text">A лучше</span>
-                </button>
-                <button class="btn btn-vote btn-equal" id="vote-equal" data-vote="=" title="Равны">
-                    <span class="vote-icon">=</span>
-                    <span class="vote-text">Равны</span>
-                </button>
-                <button class="btn btn-vote btn-right" id="vote-right" data-vote=">" title="Правое лучше">
-                    <span class="vote-text">B лучше</span>
-                    <span class="vote-icon">▶</span>
-                </button>
-            </div>
+                <p class="keyboard-hint">
+                    <kbd>Ctrl</kbd>+<kbd>Z</kbd> отменить последнюю оценку
+                </p>
+            </main>
 
-            <!-- Клавиатурные подсказки -->
-            <p class="keyboard-hint">
-                Горячие клавиши: <kbd>1</kbd> A лучше · <kbd>2</kbd> Равны · <kbd>3</kbd> B лучше
-            </p>
-        </main>
+            <!-- Боковая панель истории -->
+            <aside id="history-panel" class="history-panel glass">
+                <header class="history-panel-header">
+                    <h3>История</h3>
+                    <span class="history-hint">последние 20</span>
+                </header>
+                <ul id="history-list" class="history-list">
+                    <li class="history-empty">Сравнений пока нет</li>
+                </ul>
+            </aside>
+        </div>
 
-        <!-- Состояние загрузки -->
         <div id="loading-overlay" class="loading-overlay hidden">
             <div class="spinner"></div>
         </div>
 
-        <!-- Toast-уведомления -->
         <div id="toast-container" class="toast-container"></div>
     </div>
 
+    <!-- ============================== -->
+    <!--  Экран графа сравнений         -->
+    <!-- ============================== -->
+    <div id="results-screen" class="screen">
+        <header class="top-bar glass">
+            <div class="top-bar-left">
+                <span class="logo-mini">📊</span>
+                <span class="app-title">Граф сравнений</span>
+            </div>
+            <div class="top-bar-right">
+                <button id="back-from-results" class="btn btn-ghost btn-sm">← Назад</button>
+            </div>
+        </header>
+
+        <div class="results-controls glass">
+            <div class="control-group">
+                <label for="results-criterion">Критерий</label>
+                <select id="results-criterion"></select>
+            </div>
+            <div class="control-group">
+                <label for="results-assessor">Оценщик</label>
+                <select id="results-assessor"></select>
+            </div>
+            <button id="results-refresh" class="btn btn-primary btn-sm">Обновить</button>
+        </div>
+
+        <div class="results-stats" id="results-stats"></div>
+
+        <div class="graph-container">
+            <svg id="graph-svg"></svg>
+            <div id="graph-tooltip" class="graph-tooltip hidden"></div>
+            <div id="graph-empty" class="graph-empty hidden">Нет данных для отображения</div>
+
+            <!-- Кнопка разворачивания графа -->
+            <button id="graph-fullscreen" class="graph-fab graph-fullscreen-btn"
+                title="Развернуть на весь экран" aria-label="Развернуть граф">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                    stroke-linejoin="round" aria-hidden="true">
+                    <path d="M4 4h6M4 4v6M20 4h-6M20 4v6M4 20h6M4 20v-6M20 20h-6M20 20v-6"></path>
+                </svg>
+            </button>
+
+            <!-- Кнопка ℹ для разворачивания легенды (показывается, когда легенда свёрнута) -->
+            <button id="legend-toggle" class="graph-fab legend-toggle-btn"
+                title="Показать легенду" aria-label="Показать легенду">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                    stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="9"></circle>
+                    <line x1="12" y1="11" x2="12" y2="16"></line>
+                    <circle cx="12" cy="8" r="0.6" fill="currentColor"></circle>
+                </svg>
+            </button>
+
+            <!-- Легенда графа -->
+            <aside id="graph-legend" class="graph-legend glass">
+                <header class="legend-header">
+                    <h4>Легенда</h4>
+                    <button id="legend-close" class="legend-close" title="Свернуть"
+                        aria-label="Свернуть легенду">✕</button>
+                </header>
+                <div class="legend-section">
+                    <div class="legend-title">Вершины (изображения)</div>
+                    <div class="legend-row">
+                        <svg width="48" height="22" viewBox="0 0 48 22" aria-hidden="true">
+                            <circle cx="10" cy="11" r="4" fill="#6c63ff" fill-opacity="0.85"
+                                stroke="#fff" stroke-opacity="0.4"></circle>
+                            <circle cx="36" cy="11" r="9" fill="#6c63ff" fill-opacity="0.85"
+                                stroke="#fff" stroke-opacity="0.4"></circle>
+                        </svg>
+                        <span>Размер ∝ рейтингу BT (больше = выше)</span>
+                    </div>
+                    <div class="legend-row legend-hint">
+                        <span class="legend-dot"></span>
+                        <span>Наведение → путь, рейтинг, число сравнений</span>
+                    </div>
+                </div>
+                <div class="legend-section">
+                    <div class="legend-title">Рёбра (сравнения)</div>
+                    <div class="legend-row">
+                        <svg width="32" height="10" viewBox="0 0 32 10" aria-hidden="true">
+                            <line x1="2" y1="5" x2="30" y2="5" stroke="#00c9a7"
+                                stroke-width="2.5"></line>
+                        </svg>
+                        <span>A &lt; B (победа A)</span>
+                    </div>
+                    <div class="legend-row">
+                        <svg width="32" height="10" viewBox="0 0 32 10" aria-hidden="true">
+                            <line x1="2" y1="5" x2="30" y2="5" stroke="#ffc107"
+                                stroke-width="2.5"></line>
+                        </svg>
+                        <span>A = B (ничья)</span>
+                    </div>
+                    <div class="legend-row">
+                        <svg width="32" height="10" viewBox="0 0 32 10" aria-hidden="true">
+                            <line x1="2" y1="5" x2="30" y2="5" stroke="#ff6b6b"
+                                stroke-width="2.5"></line>
+                        </svg>
+                        <span>A &gt; B (победа B)</span>
+                    </div>
+                </div>
+                <div class="legend-section">
+                    <div class="legend-title">Управление</div>
+                    <div class="legend-row legend-hint">
+                        <span>Колесо мыши — масштаб; перетаскивание — вершины</span>
+                    </div>
+                </div>
+            </aside>
+        </div>
+    </div>
+
+    <!-- ============================== -->
+    <!--  Экран рейтингов Брэдли-Терри  -->
+    <!-- ============================== -->
+    <div id="bt-screen" class="screen">
+        <header class="top-bar glass">
+            <div class="top-bar-left">
+                <span class="logo-mini">🏆</span>
+                <span class="app-title">Рейтинги Брэдли-Терри</span>
+            </div>
+            <div class="top-bar-right">
+                <button id="back-from-bt" class="btn btn-ghost btn-sm">← Назад</button>
+            </div>
+        </header>
+
+        <div class="bt-content">
+            <section class="bt-intro glass">
+                <h2>Алгоритм Брэдли-Терри (Zermelo-Ford + Laplace smoothing)</h2>
+                <p>
+                    Каждому изображению <em>i</em> присваивается параметр «силы» πᵢ.
+                    Вероятность того, что <em>i</em> побеждает <em>j</em>:
+                    <code>P(i &gt; j) = πᵢ / (πᵢ + πⱼ)</code>.
+                    Параметры оцениваются итеративно по всем сравнениям сразу — порядок не
+                    влияет на результат. Регуляризация добавляет к каждой паре виртуальные
+                    сравнения и виртуальные победы (<code>λ = 0.5</code>), что не даёт
+                    рейтингам уйти в 0 или ∞ при разреженных данных.
+                </p>
+                <details>
+                    <summary>Подробнее о реализации</summary>
+                    <p>
+                        Полное описание алгоритма, формулы, обоснование сглаживания и
+                        ссылки на код см. в <a href="../bradley_terry.md">bradley_terry.md</a>.
+                    </p>
+                </details>
+            </section>
+
+            <div class="bt-controls glass">
+                <div class="control-group">
+                    <label for="bt-criterion">Критерий</label>
+                    <select id="bt-criterion"></select>
+                </div>
+                <button id="bt-refresh" class="btn btn-primary btn-sm">Пересчитать</button>
+            </div>
+
+            <div id="bt-summary" class="bt-summary"></div>
+
+            <div class="bt-table-wrapper glass">
+                <table id="bt-table" class="bt-table">
+                    <thead>
+                        <tr>
+                            <th class="th-rank">#</th>
+                            <th class="th-preview">Изображение</th>
+                            <th class="th-path">Путь</th>
+                            <th class="th-bt">π (BT)</th>
+                            <th class="th-bar">Рейтинг</th>
+                            <th class="th-count">Сравнений</th>
+                        </tr>
+                    </thead>
+                    <tbody id="bt-tbody">
+                        <tr>
+                            <td colspan="6" class="bt-empty">Нет данных. Сначала проведите
+                                сравнения.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================== -->
+    <!--  Лайтбокс изображений            -->
+    <!-- ============================== -->
+    <div id="lightbox" class="lightbox hidden" role="dialog" aria-modal="true"
+        aria-label="Просмотр изображения">
+        <button id="lightbox-close" class="lightbox-close" title="Закрыть (Esc)"
+            aria-label="Закрыть">✕</button>
+        <div class="lightbox-zoom-info" id="lightbox-zoom-info">100%</div>
+        <div id="lightbox-viewport" class="lightbox-viewport">
+            <img id="lightbox-img" alt="" draggable="false">
+        </div>
+        <div class="lightbox-hint">
+            Колёсико — масштаб · перетаскивание ЛКМ — перемещение · <kbd>Esc</kbd> — закрыть
+        </div>
+    </div>
+
+    <script src="https://d3js.org/d3.v7.min.js"></script>
     <script src="app.js"></script>
 </body>
 
