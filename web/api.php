@@ -5,7 +5,11 @@
  * ==========================================================
  *
  *  Маршруты (action):
- *    GET  ?action=pair                              — Случайная пара изображений
+ *    GET  ?action=pair  [&excluded=...|&included=...] — Случайная пара изображений
+ *    POST action=pair   excluded=p1|p2|... | included=...
+ *    POST action=submit_round                          — Раунд (батч голосов по паре)
+ *    POST action=undo_round  round_id, nickname        — Отменить весь раунд
+ *    GET  ?action=tree                              — Дерево папок и файлов test_data
  *    GET  ?action=image&path=...                    — Файл изображения
  *    GET  ?action=criteria                          — Список критериев
  *    GET  ?action=history&nickname=X                — Последние N сравнений ассессора
@@ -74,7 +78,10 @@ $action = $_GET['action'] ?? $_POST['action'] ?? '';
 try {
     switch ($action) {
         case 'pair':            handlePair(); break;
+        case 'tree':            handleTree(); break;
         case 'vote':            handleVote(); break;
+        case 'submit_round':    handleSubmitRound(); break;
+        case 'undo_round':      handleUndoRound(); break;
         case 'undo':            handleUndo(); break;
         case 'image':           handleImage(); break;
         case 'criteria':            handleCriteria(); break;
@@ -190,20 +197,182 @@ function handlePair(): void
 {
     $images = scanImagesRecursive(IMAGE_DIR);
 
+    // Поддержка фильтра. Можно передать ИЛИ списком исключённых путей
+    // (excluded=p1|p2|...) ИЛИ списком включённых (included=p1|p2|...).
+    // Если оба — included имеет приоритет.
+    $includedRaw = $_POST['included'] ?? $_GET['included'] ?? '';
+    $excludedRaw = $_POST['excluded'] ?? $_GET['excluded'] ?? '';
+
+    if ($includedRaw !== '') {
+        $includedList = array_filter(array_map('trim', explode('|', $includedRaw)));
+        $included = array_flip($includedList);
+        $images = array_values(array_filter(
+            $images,
+            static fn($p) => isset($included[$p])
+        ));
+    } elseif ($excludedRaw !== '') {
+        $excludedList = array_filter(array_map('trim', explode('|', $excludedRaw)));
+        $excluded = array_flip($excludedList);
+        $images = array_values(array_filter(
+            $images,
+            static fn($p) => !isset($excluded[$p])
+        ));
+    }
+
     if (count($images) < 2) {
-        jsonResponse(['error' => 'Недостаточно изображений (нужно ≥ 2).'], 500);
+        jsonResponse([
+            'error' => 'Недостаточно изображений после применения фильтра (нужно ≥ 2).'
+        ], 500);
         return;
     }
 
-    $idx1 = array_rand($images);
-    do {
-        $idx2 = array_rand($images);
-    } while ($idx2 === $idx1);
+    // Информативная (умная) выборка пары:
+    //   1. Уникальные пары C(N,2) по фильтру.
+    //   2. Вычитаем глобально увиденные раунды.
+    //   3. Если непокрытых нет → all_done.
+    //   4. Иначе предпочитаем пары, где хотя бы одно изображение наименее
+    //      сравнённое (min count), а второе — наиболее сравнённое
+    //      (информативный «мост»).
+
+    sort($images, SORT_STRING);
+    $n = count($images);
+    $totalUnique = intdiv($n * ($n - 1), 2);
+
+    $seenMap   = db()->getSeenPairsGlobal();         // "pathA|pathB" => cnt
+    $countMap  = db()->getPairCountsGlobal();        // path => cnt
+
+    // Считаем seen_unique только в пределах текущего фильтра.
+    $availableSet = array_flip($images);
+    $seenUnique = 0;
+    foreach ($seenMap as $key => $_cnt) {
+        [$a, $b] = explode('|', $key, 2);
+        if (isset($availableSet[$a]) && isset($availableSet[$b])) {
+            $seenUnique++;
+        }
+    }
+    $remaining = $totalUnique - $seenUnique;
+
+    if ($remaining <= 0) {
+        $scope = !empty($_POST['included']) || !empty($_GET['included'])
+              || !empty($_POST['excluded']) || !empty($_GET['excluded'])
+            ? 'filter' : 'all';
+        jsonResponse([
+            'all_done' => true,
+            'total_unique' => $totalUnique,
+            'seen_unique' => $seenUnique,
+            'remaining_unique' => 0,
+            'scope' => $scope,
+            'images' => $n,
+        ]);
+        return;
+    }
+
+    // Перечисляем непокрытые пары и считаем score информативности.
+    // score = (-min(cI, cJ), max(cI, cJ)) — сначала «least-compared image»,
+    // затем «most-connected partner». Для лексико-минимизации работаем с
+    // отрицанием первого компонента.
+    $candidates = [];     // [pair_idxA, pair_idxB, scoreKey]
+    $bestKey = null;      // (negMin, maxC)
+    for ($i = 0; $i < $n; $i++) {
+        for ($j = $i + 1; $j < $n; $j++) {
+            $a = $images[$i];
+            $b = $images[$j];
+            $key = $a <= $b ? "$a|$b" : "$b|$a";
+            if (isset($seenMap[$key])) continue;
+
+            $ca = $countMap[$a] ?? 0;
+            $cb = $countMap[$b] ?? 0;
+            $minC = $ca < $cb ? $ca : $cb;
+            $maxC = $ca > $cb ? $ca : $cb;
+            // Лексикографический ключ: сначала меньшее min => больший приоритет;
+            // среди равных — большее max => больший приоритет.
+            $scoreKey = [-$minC, $maxC];
+
+            if ($bestKey === null || $scoreKey > $bestKey) {
+                $bestKey = $scoreKey;
+                $candidates = [[$a, $b]];
+            } elseif ($scoreKey === $bestKey) {
+                $candidates[] = [$a, $b];
+            }
+        }
+    }
+
+    // Из топ-кандидатов берём случайного.
+    [$picked0, $picked1] = $candidates[array_rand($candidates)];
+
+    // Рандомизируем сторону left/right (50/50), чтобы избежать bias.
+    if (random_int(0, 1) === 1) {
+        [$picked0, $picked1] = [$picked1, $picked0];
+    }
 
     jsonResponse([
-        'left' => $images[$idx1],
-        'right' => $images[$idx2],
+        'left' => $picked0,
+        'right' => $picked1,
+        'total_unique' => $totalUnique,
+        'seen_unique' => $seenUnique,
+        'remaining_unique' => $remaining,
     ]);
+}
+
+/**
+ * Возвращает дерево папок и файлов внутри IMAGE_DIR в виде JSON.
+ * Структура каждого узла: { name, type: 'dir'|'file', path?, children? }.
+ */
+function handleTree(): void
+{
+    $tree = scanTree(IMAGE_DIR, IMAGE_DIR);
+    jsonResponse([
+        'name' => basename(IMAGE_DIR),
+        'type' => 'dir',
+        'children' => $tree,
+    ]);
+}
+
+function scanTree(string $dir, string $baseDir): array
+{
+    $entries = [];
+    if (!is_dir($dir)) return $entries;
+
+    $items = @scandir($dir) ?: [];
+    sort($items, SORT_NATURAL | SORT_FLAG_CASE);
+
+    foreach ($items as $name) {
+        if ($name === '.' || $name === '..') continue;
+        $full = $dir . DIRECTORY_SEPARATOR . $name;
+
+        if (is_dir($full)) {
+            $children = scanTree($full, $baseDir);
+            // Скрываем пустые директории, чтобы не засорять дерево.
+            if (empty($children)) continue;
+            $entries[] = [
+                'name' => $name,
+                'type' => 'dir',
+                'children' => $children,
+            ];
+        } elseif (is_file($full)) {
+            $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+            if (!in_array($ext, ALLOWED_EXTENSIONS, true)) continue;
+            $rel = './' . ltrim(
+                str_replace('\\', '/', substr($full, strlen($baseDir))),
+                '/'
+            );
+            $entries[] = [
+                'name' => $name,
+                'type' => 'file',
+                'path' => $rel,
+            ];
+        }
+    }
+
+    // Папки выше файлов.
+    usort($entries, static function ($a, $b) {
+        if ($a['type'] !== $b['type']) {
+            return $a['type'] === 'dir' ? -1 : 1;
+        }
+        return strnatcasecmp($a['name'], $b['name']);
+    });
+
+    return $entries;
 }
 
 function handleVote(): void
@@ -263,13 +432,122 @@ function handleUndo(): void
     jsonResponse(['ok' => true, 'undone' => $undone]);
 }
 
+/**
+ * Принимает раунд (батч голосов по одной паре):
+ *   POST nickname=X  left=...  right=...  votes=<JSON-массив>
+ * где votes — JSON формата [{"session_id": int, "sign": "<"|"="|">"}, ...].
+ */
+function handleSubmitRound(): void
+{
+    $nickname = trim($_POST['nickname'] ?? '');
+    $left = trim($_POST['left'] ?? '');
+    $right = trim($_POST['right'] ?? '');
+    $votesRaw = $_POST['votes'] ?? '';
+
+    if ($nickname === '' || $left === '' || $right === '' || $votesRaw === '') {
+        jsonResponse(['error' => 'Поля обязательны: nickname, left, right, votes.'], 400);
+        return;
+    }
+    if (!preg_match('/^[A-Za-zА-Яа-яёЁ0-9_\-]{1,32}$/u', $nickname)) {
+        jsonResponse(['error' => 'Недопустимый никнейм.'], 400);
+        return;
+    }
+    $votes = json_decode($votesRaw, true);
+    if (!is_array($votes) || count($votes) === 0) {
+        jsonResponse(['error' => 'Поле votes должно быть непустым JSON-массивом.'], 400);
+        return;
+    }
+
+    $clean = [];
+    foreach ($votes as $v) {
+        if (!isset($v['session_id'], $v['sign'])) {
+            jsonResponse(['error' => 'Каждый голос требует session_id и sign.'], 400);
+            return;
+        }
+        if (!in_array($v['sign'], ['<', '=', '>'], true)) {
+            jsonResponse(['error' => 'Недопустимый знак: ' . $v['sign']], 400);
+            return;
+        }
+        $sid = (int) $v['session_id'];
+        if ($sid <= 0 || db()->getSession($sid) === null) {
+            jsonResponse(['error' => 'Сессия не найдена: ' . $v['session_id']], 404);
+            return;
+        }
+        $clean[] = ['session_id' => $sid, 'sign' => $v['sign']];
+    }
+
+    // Все сессии должны принадлежать одному ассессору с указанным никнеймом.
+    $assessor = db()->getAssessorByNickname($nickname);
+    if ($assessor === null) {
+        jsonResponse(['error' => 'Оценщик не найден.'], 404);
+        return;
+    }
+    $assessorId = (int) $assessor['id'];
+
+    foreach ($clean as $v) {
+        $session = db()->getSession($v['session_id']);
+        if ((int) $session['assessor_id'] !== $assessorId) {
+            jsonResponse(['error' => 'Сессия не принадлежит ассессору.'], 403);
+            return;
+        }
+    }
+
+    $info = db()->createRound($assessorId, $left, $right, $clean);
+
+    // Автобэкап каждые N активных сравнений (учитываем все индивидуальные голоса).
+    $total = db()->getActiveComparisonsCount();
+    $backupCreated = false;
+    if ($total > 0 && intdiv($total, AUTO_BACKUP_EVERY) >
+        intdiv($total - count($clean), AUTO_BACKUP_EVERY)) {
+        $backup = db()->makeBackup();
+        $backupCreated = $backup !== null;
+    }
+
+    jsonResponse([
+        'ok' => true,
+        'round_id' => $info['round_id'],
+        'number' => $info['number'],
+        'comparison_ids' => $info['comparison_ids'],
+        'auto_backup' => $backupCreated,
+    ]);
+}
+
+/**
+ * Отменяет весь раунд (вместе со всеми голосами по критериям).
+ *   POST round_id=N  nickname=X
+ */
+function handleUndoRound(): void
+{
+    $roundId = (int) ($_POST['round_id'] ?? 0);
+    $nickname = trim($_POST['nickname'] ?? '');
+
+    if ($roundId <= 0 || $nickname === '') {
+        jsonResponse(['error' => 'Поля обязательны: round_id, nickname.'], 400);
+        return;
+    }
+    $undone = db()->undoRound($roundId, $nickname);
+    if ($undone === null) {
+        jsonResponse(['error' => 'Раунд не найден или уже отменён.'], 404);
+        return;
+    }
+    jsonResponse(['ok' => true, 'undone' => $undone]);
+}
+
 function handleHistory(): void
 {
     $nickname = trim($_GET['nickname'] ?? '');
     if ($nickname !== '') {
-        $history = db()->getHistoryByAssessor($nickname);
+        // Новый формат: история раундов (объединённое сравнение).
+        // limit=0 → вся история пользователя без ограничений.
+        $limit = (int) ($_GET['limit'] ?? 0);
+        $rounds = db()->getRoundsByAssessor($nickname, max(0, $limit));
         $total = db()->getAssessorTotalCount($nickname);
-        jsonResponse(['history' => $history, 'total' => $total]);
+        $totalRounds = db()->getAssessorRoundCount($nickname);
+        jsonResponse([
+            'rounds' => $rounds,
+            'total' => $total,
+            'total_rounds' => $totalRounds,
+        ]);
         return;
     }
     $sessionId = (int) ($_GET['session_id'] ?? 0);

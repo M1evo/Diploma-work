@@ -54,6 +54,8 @@
             <div class="top-bar-right">
                 <span id="user-badge" class="badge"></span>
                 <span id="counter-badge" class="badge badge-accent">0 оценок</span>
+                <button id="filter-btn" class="btn btn-ghost btn-sm"
+                    title="Фильтр изображений">🗂</button>
                 <button id="bt-btn" class="btn btn-ghost btn-sm" title="Рейтинги BT">🏆</button>
                 <button id="results-btn" class="btn btn-ghost btn-sm" title="Граф сравнений">📊</button>
                 <button id="logout-btn" class="btn btn-ghost btn-sm" title="Выйти">✕</button>
@@ -95,6 +97,18 @@
                     <span id="round-progress" class="round-progress">0 / 0 критериев оценено</span>
                 </div>
 
+                <!-- Баннер: все уникальные пары пройдены -->
+                <div id="all-done-banner" class="all-done-banner glass hidden">
+                    <div class="all-done-icon">✓</div>
+                    <h3 class="all-done-title">Все уникальные пары пройдены</h3>
+                    <p class="all-done-desc" id="all-done-desc"></p>
+                    <div class="all-done-actions">
+                        <button class="btn btn-ghost" data-banner-action="filter">🗂 Изменить фильтр</button>
+                        <button class="btn btn-ghost" data-banner-action="bt">🏆 Рейтинги BT</button>
+                        <button class="btn btn-ghost" data-banner-action="graph">📊 Граф</button>
+                    </div>
+                </div>
+
                 <p class="keyboard-hint">
                     <kbd>Ctrl</kbd>+<kbd>Z</kbd> отменить последнюю оценку
                 </p>
@@ -104,7 +118,7 @@
             <aside id="history-panel" class="history-panel glass">
                 <header class="history-panel-header">
                     <h3>История</h3>
-                    <span class="history-hint">последние 20</span>
+                    <span id="history-count" class="history-hint">всего: 0</span>
                 </header>
                 <ul id="history-list" class="history-list">
                     <li class="history-empty">Сравнений пока нет</li>
@@ -296,6 +310,33 @@
                     </tbody>
                 </table>
             </div>
+        </div>
+    </div>
+
+    <!-- ============================== -->
+    <!--  Модальное окно фильтра          -->
+    <!-- ============================== -->
+    <div id="filter-modal" class="modal hidden" role="dialog" aria-modal="true"
+        aria-labelledby="filter-modal-title">
+        <div class="modal-backdrop" data-close="filter"></div>
+        <div class="modal-content glass">
+            <header class="modal-header">
+                <h3 id="filter-modal-title">Выбор изображений для оценки</h3>
+                <button class="btn-ghost modal-x" data-close="filter"
+                    title="Закрыть" aria-label="Закрыть">✕</button>
+            </header>
+            <div class="modal-toolbar">
+                <button id="filter-select-all" class="btn btn-ghost btn-sm">✓ Все</button>
+                <button id="filter-deselect-all" class="btn btn-ghost btn-sm">✗ Никого</button>
+                <button id="filter-expand-all" class="btn btn-ghost btn-sm">Раскрыть</button>
+                <button id="filter-collapse-all" class="btn btn-ghost btn-sm">Свернуть</button>
+                <span id="filter-count" class="filter-count"></span>
+            </div>
+            <div id="filter-tree" class="filter-tree"></div>
+            <footer class="modal-footer">
+                <button id="filter-cancel" class="btn btn-ghost" data-close="filter">Отмена</button>
+                <button id="filter-apply" class="btn btn-primary">Применить</button>
+            </footer>
         </div>
     </div>
 

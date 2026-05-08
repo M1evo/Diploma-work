@@ -65,6 +65,51 @@ class Database
         if ($needsInit) {
             $this->initializeSchema();
             $this->seedCriteria();
+        } else {
+            // Лёгкая миграция для существующих БД: добавляем новые таблицы и
+            // колонки, если их ещё нет.
+            $this->migrate();
+        }
+    }
+
+    /**
+     * Применяет инкрементальные изменения схемы поверх старой БД.
+     */
+    private function migrate(): void
+    {
+        // 1. Таблица rounds: группирует все criterion-голоса по одной паре.
+        $exists = $this->pdo->query(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='rounds'"
+        )->fetch();
+        if (!$exists) {
+            $this->pdo->exec("
+                CREATE TABLE rounds (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    assessor_id INTEGER NOT NULL,
+                    image_left TEXT NOT NULL,
+                    image_right TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    is_undone INTEGER DEFAULT 0,
+                    FOREIGN KEY (assessor_id) REFERENCES assessors(id)
+                );
+                CREATE INDEX idx_rounds_assessor ON rounds(assessor_id);
+                CREATE INDEX idx_rounds_undone ON rounds(is_undone);
+            ");
+        }
+
+        // 2. Колонка round_id в comparisons.
+        $cols = $this->pdo->query("PRAGMA table_info(comparisons)")->fetchAll();
+        $hasRoundId = false;
+        foreach ($cols as $col) {
+            if ($col['name'] === 'round_id') { $hasRoundId = true; break; }
+        }
+        if (!$hasRoundId) {
+            $this->pdo->exec(
+                'ALTER TABLE comparisons ADD COLUMN round_id INTEGER REFERENCES rounds(id)'
+            );
+            $this->pdo->exec(
+                'CREATE INDEX IF NOT EXISTS idx_comparisons_round ON comparisons(round_id)'
+            );
         }
     }
 
@@ -95,9 +140,23 @@ class Database
                 FOREIGN KEY (criterion_id) REFERENCES criteria(id)
             );
 
+            CREATE TABLE rounds (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                assessor_id INTEGER NOT NULL,
+                image_left TEXT NOT NULL,
+                image_right TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                is_undone INTEGER DEFAULT 0,
+                FOREIGN KEY (assessor_id) REFERENCES assessors(id)
+            );
+
+            CREATE INDEX idx_rounds_assessor ON rounds(assessor_id);
+            CREATE INDEX idx_rounds_undone ON rounds(is_undone);
+
             CREATE TABLE comparisons (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id INTEGER NOT NULL,
+                round_id INTEGER REFERENCES rounds(id),
                 image_left TEXT NOT NULL,
                 image_right TEXT NOT NULL,
                 result TEXT NOT NULL CHECK(result IN ('<', '=', '>')),
@@ -108,6 +167,7 @@ class Database
 
             CREATE INDEX idx_comparisons_session ON comparisons(session_id);
             CREATE INDEX idx_comparisons_undone ON comparisons(is_undone);
+            CREATE INDEX idx_comparisons_round ON comparisons(round_id);
 
             CREATE TABLE ratings (
                 image_path TEXT NOT NULL,
@@ -251,6 +311,194 @@ class Database
     }
 
     /**
+     * Создаёт раунд (объединённое сравнение по одной паре изображений) и
+     * добавляет голоса по всем переданным критериям в одной транзакции.
+     *
+     * @param int    $assessorId
+     * @param string $left
+     * @param string $right
+     * @param array  $votes  Массив [['session_id'=>..., 'sign'=>'<'|'='|'>'], ...]
+     * @return array  ['round_id' => int, 'number' => int (порядковый номер раунда),
+     *                 'comparison_ids' => [int, ...]]
+     */
+    public function createRound(int $assessorId, string $left, string $right, array $votes): array
+    {
+        $this->pdo->beginTransaction();
+        try {
+            $stmt = $this->pdo->prepare(
+                'INSERT INTO rounds (assessor_id, image_left, image_right) VALUES (?, ?, ?)'
+            );
+            $stmt->execute([$assessorId, $left, $right]);
+            $roundId = (int) $this->pdo->lastInsertId();
+
+            $insertCmp = $this->pdo->prepare(
+                'INSERT INTO comparisons (session_id, round_id, image_left, image_right, result)
+                 VALUES (?, ?, ?, ?, ?)'
+            );
+            $cmpIds = [];
+            foreach ($votes as $v) {
+                $insertCmp->execute([
+                    (int) $v['session_id'],
+                    $roundId,
+                    $left,
+                    $right,
+                    $v['sign'],
+                ]);
+                $cmpIds[] = (int) $this->pdo->lastInsertId();
+            }
+
+            // Глобальный порядковый номер раунда у этого ассессора (без отменённых).
+            $countStmt = $this->pdo->prepare(
+                'SELECT COUNT(*) AS cnt FROM rounds
+                 WHERE assessor_id = ? AND is_undone = 0'
+            );
+            $countStmt->execute([$assessorId]);
+            $number = (int) $countStmt->fetch()['cnt'];
+
+            $this->pdo->commit();
+            return [
+                'round_id' => $roundId,
+                'number' => $number,
+                'comparison_ids' => $cmpIds,
+            ];
+        } catch (Throwable $e) {
+            $this->pdo->rollBack();
+            throw $e;
+        }
+    }
+
+    /**
+     * Отменяет раунд: помечает rounds.is_undone = 1 и каскадно
+     * comparisons.is_undone = 1 для всех его дочерних голосов.
+     * Проверяет принадлежность раунда указанному ассессору.
+     *
+     * @return array|null  Информация об отменённом раунде или null, если
+     *                     раунд не найден / уже отменён / чужой.
+     */
+    public function undoRound(int $roundId, string $nickname): ?array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT r.* FROM rounds r
+             JOIN assessors a ON r.assessor_id = a.id
+             WHERE r.id = ? AND a.nickname = ? AND r.is_undone = 0'
+        );
+        $stmt->execute([$roundId, $nickname]);
+        $row = $stmt->fetch();
+        if ($row === false) return null;
+
+        $this->pdo->beginTransaction();
+        try {
+            $this->pdo->prepare('UPDATE rounds SET is_undone = 1 WHERE id = ?')
+                      ->execute([$roundId]);
+            $this->pdo->prepare(
+                'UPDATE comparisons SET is_undone = 1 WHERE round_id = ?'
+            )->execute([$roundId]);
+            $this->pdo->commit();
+        } catch (Throwable $e) {
+            $this->pdo->rollBack();
+            throw $e;
+        }
+        return $row;
+    }
+
+    /**
+     * Возвращает последние N раундов ассессора с встроенным списком голосов
+     * по критериям. Каждый раунд:
+     *   {id, image_left, image_right, created_at, is_undone, number,
+     *    votes: [{criterion_id, criterion_name, sign}, ...]}
+     */
+    public function getRoundsByAssessor(string $nickname, int $limit = 0): array
+    {
+        // $limit === 0  →  без LIMIT, возвращаем всю историю пользователя.
+        if ($limit > 0) {
+            $stmt = $this->pdo->prepare(
+                'SELECT r.*
+                 FROM rounds r
+                 JOIN assessors a ON r.assessor_id = a.id
+                 WHERE a.nickname = ?
+                 ORDER BY r.id DESC
+                 LIMIT ?'
+            );
+            $stmt->execute([$nickname, $limit]);
+        } else {
+            $stmt = $this->pdo->prepare(
+                'SELECT r.*
+                 FROM rounds r
+                 JOIN assessors a ON r.assessor_id = a.id
+                 WHERE a.nickname = ?
+                 ORDER BY r.id DESC'
+            );
+            $stmt->execute([$nickname]);
+        }
+        $rounds = $stmt->fetchAll();
+        if (empty($rounds)) return [];
+
+        // Подгружаем голоса по критериям для каждого раунда.
+        $idsCsv = implode(',', array_map('intval', array_column($rounds, 'id')));
+        $voteStmt = $this->pdo->query(
+            "SELECT c.id AS comparison_id, c.round_id, c.result, c.is_undone,
+                    s.criterion_id, cr.name AS criterion_name
+             FROM comparisons c
+             JOIN sessions s ON c.session_id = s.id
+             JOIN criteria cr ON s.criterion_id = cr.id
+             WHERE c.round_id IN ($idsCsv)
+             ORDER BY cr.id"
+        );
+        $votesByRound = [];
+        foreach ($voteStmt->fetchAll() as $v) {
+            $rid = (int) $v['round_id'];
+            $votesByRound[$rid][] = [
+                'comparison_id' => (int) $v['comparison_id'],
+                'criterion_id' => (int) $v['criterion_id'],
+                'criterion_name' => $v['criterion_name'],
+                'sign' => $v['result'],
+            ];
+        }
+
+        // Считаем порядковые номера активных раундов (1 = самый ранний).
+        $numberStmt = $this->pdo->prepare(
+            'SELECT COUNT(*) AS cnt FROM rounds r
+             JOIN assessors a ON r.assessor_id = a.id
+             WHERE a.nickname = ? AND r.is_undone = 0 AND r.id <= ?'
+        );
+
+        $out = [];
+        foreach ($rounds as $r) {
+            $rid = (int) $r['id'];
+            $isUndone = (int) $r['is_undone'];
+            $number = null;
+            if ($isUndone === 0) {
+                $numberStmt->execute([$nickname, $rid]);
+                $number = (int) $numberStmt->fetch()['cnt'];
+            }
+            $out[] = [
+                'id' => $rid,
+                'image_left' => $r['image_left'],
+                'image_right' => $r['image_right'],
+                'created_at' => $r['created_at'],
+                'is_undone' => $isUndone,
+                'number' => $number,
+                'votes' => $votesByRound[$rid] ?? [],
+            ];
+        }
+        return $out;
+    }
+
+    /**
+     * Общее число активных раундов ассессора (не отменённых).
+     */
+    public function getAssessorRoundCount(string $nickname): int
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT COUNT(*) AS cnt FROM rounds r
+             JOIN assessors a ON r.assessor_id = a.id
+             WHERE a.nickname = ? AND r.is_undone = 0'
+        );
+        $stmt->execute([$nickname]);
+        return (int) $stmt->fetch()['cnt'];
+    }
+
+    /**
      * Общее число активных сравнений ассессора по всем критериям.
      */
     public function getAssessorTotalCount(string $nickname): int
@@ -386,6 +634,51 @@ class Database
         return $rows;
     }
 
+    /* ==================== УМНАЯ ВЫБОРКА ПАР ==================== */
+
+    /**
+     * Возвращает увиденные (активные) пары изображений по всем пользователям.
+     * Ключ — нормализованная пара "pathA|pathB" с pathA <= pathB
+     * лексикографически. Значение — общее число раундов на эту пару.
+     */
+    public function getSeenPairsGlobal(): array
+    {
+        $stmt = $this->pdo->query(
+            'SELECT image_left, image_right, COUNT(*) AS cnt
+             FROM rounds
+             WHERE is_undone = 0
+             GROUP BY image_left, image_right'
+        );
+        $out = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $a = $row['image_left'];
+            $b = $row['image_right'];
+            $key = $a <= $b ? "$a|$b" : "$b|$a";
+            $out[$key] = ($out[$key] ?? 0) + (int) $row['cnt'];
+        }
+        return $out;
+    }
+
+    /**
+     * Для каждого изображения возвращает число активных раундов с его участием
+     * (по всем пользователям). Ключ — путь, значение — count.
+     */
+    public function getPairCountsGlobal(): array
+    {
+        $stmt = $this->pdo->query(
+            "SELECT image_path, COUNT(*) AS cnt FROM (
+                SELECT image_left  AS image_path FROM rounds WHERE is_undone = 0
+                UNION ALL
+                SELECT image_right AS image_path FROM rounds WHERE is_undone = 0
+            ) GROUP BY image_path"
+        );
+        $out = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $out[$row['image_path']] = (int) $row['cnt'];
+        }
+        return $out;
+    }
+
     /* ==================== BRADLEY-TERRY / ELO ==================== */
 
     public function getAllComparisons(int $criterionId): array
@@ -438,10 +731,11 @@ class Database
             $j = $idx[$cmp['image_right']];
             $r = $cmp['result'];
 
+            // Семантика проекта: '<' = «A (left) лучше», '>' = «B (right) лучше».
             if ($r === '<') {
-                $wins[$j] += 1.0;
+                $wins[$i] += 1.0;       // выиграл left
             } elseif ($r === '>') {
-                $wins[$i] += 1.0;
+                $wins[$j] += 1.0;       // выиграл right
             } else {
                 $wins[$i] += 0.5;
                 $wins[$j] += 0.5;

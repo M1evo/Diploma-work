@@ -16,7 +16,8 @@
 /* ---------- Конфигурация ---------- */
 
 const API_BASE = './api.php';
-const HISTORY_LIMIT = 20;
+// История раундов в UI безлимитная — все сравнения текущего пользователя
+// видны до выхода из сессии.
 
 /* ---------- DOM ---------- */
 
@@ -44,8 +45,11 @@ const $pathRight = $('path-right');
 const $criteriaRows = $('criteria-rows');
 const $nextPairBtn = $('next-pair-btn');
 const $roundProgress = $('round-progress');
+const $allDoneBanner = $('all-done-banner');
+const $allDoneDesc = $('all-done-desc');
 
 const $historyList = $('history-list');
+const $historyCount = $('history-count');
 
 const $loadingOverlay = $('loading-overlay');
 const $toastContainer = $('toast-container');
@@ -69,6 +73,16 @@ const $graphLegend = $('graph-legend');
 const $legendToggle = $('legend-toggle');
 const $legendClose = $('legend-close');
 const $graphFullscreen = $('graph-fullscreen');
+
+const $filterBtn = $('filter-btn');
+const $filterModal = $('filter-modal');
+const $filterTree = $('filter-tree');
+const $filterCount = $('filter-count');
+const $filterApply = $('filter-apply');
+const $filterSelectAll = $('filter-select-all');
+const $filterDeselectAll = $('filter-deselect-all');
+const $filterExpandAll = $('filter-expand-all');
+const $filterCollapseAll = $('filter-collapse-all');
 
 const $lightbox = $('lightbox');
 const $lightboxImg = $('lightbox-img');
@@ -94,6 +108,14 @@ let state = {
     viewingHistory: false,
     graphData: null,
     graphResizeObs: null,
+    /** Активен ли фильтр. Если false — все изображения участвуют (дефолт).
+     *  Сохраняется в localStorage между сессиями. */
+    filterActive: localStorage.getItem('filterActive') === '1',
+    /** Set<string> — пути изображений, ВКЛЮЧЁННЫХ пользователем (для активного
+     *  фильтра). При filterActive=false список не используется. */
+    selectedPaths: new Set(JSON.parse(localStorage.getItem('selectedPaths') || '[]')),
+    /** Кэш дерева — чтобы не перезапрашивать при каждом открытии модала. */
+    treeCache: null,
 };
 
 /* ---------- Инициализация ---------- */
@@ -111,7 +133,17 @@ function init() {
     $btBtn.addEventListener('click', switchToBt);
     $backFromResults.addEventListener('click', () => switchToComparison(false));
     $backFromBt.addEventListener('click', () => switchToComparison(false));
-    $nextPairBtn.addEventListener('click', () => loadPair());
+    $nextPairBtn.addEventListener('click', () => submitRoundAndLoadPair());
+
+    // Кнопки баннера «все пары пройдены».
+    $allDoneBanner.querySelectorAll('[data-banner-action]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const a = btn.dataset.bannerAction;
+            if (a === 'filter') openFilterModal();
+            else if (a === 'bt') switchToBt();
+            else if (a === 'graph') switchToResults();
+        });
+    });
 
     $resultsRefresh.addEventListener('click', renderGraph);
     $resultsCriterion.addEventListener('change', renderGraph);
@@ -136,6 +168,17 @@ function init() {
 
     // Развернуть/свернуть граф на весь экран.
     $graphFullscreen.addEventListener('click', toggleGraphFullscreen);
+
+    // Фильтр изображений.
+    $filterBtn.addEventListener('click', openFilterModal);
+    $filterApply.addEventListener('click', applyFilter);
+    $filterSelectAll.addEventListener('click', () => bulkSetFilter(false));
+    $filterDeselectAll.addEventListener('click', () => bulkSetFilter(true));
+    $filterExpandAll.addEventListener('click', () => bulkExpandFilter(true));
+    $filterCollapseAll.addEventListener('click', () => bulkExpandFilter(false));
+    $filterModal.querySelectorAll('[data-close="filter"]').forEach((el) => {
+        el.addEventListener('click', closeFilterModal);
+    });
 
     // Бэкап на закрытие/уход.
     window.addEventListener('visibilitychange', () => {
@@ -243,11 +286,36 @@ function renderCriteriaRows() {
         `;
         row.querySelectorAll('.btn-vote-mini').forEach((btn) => {
             btn.addEventListener('click', () =>
-                submitCriterionVote(s.criterion_id, btn.dataset.vote)
+                selectCriterionVote(s.criterion_id, btn.dataset.vote)
             );
         });
         $criteriaRows.appendChild(row);
     });
+    updateRoundProgress();
+}
+
+/**
+ * Локальный выбор/перевыбор оценки по критерию. Никаких сетевых запросов —
+ * фактическая отправка происходит только в submitRoundAndLoadPair.
+ */
+function selectCriterionVote(criterionId, sign) {
+    if (state.viewingHistory) {
+        showToast('Просмотр истории — голосование недоступно.', 'error');
+        return;
+    }
+    if (!state.currentLeft || !state.currentRight) return;
+
+    state.pairVotes.set(criterionId, sign);
+
+    const row = document.querySelector(
+        `.criterion-row[data-criterion-id="${criterionId}"]`
+    );
+    if (row) {
+        row.classList.add('done');
+        row.querySelectorAll('.btn-vote-mini').forEach((b) => {
+            b.classList.toggle('active', b.dataset.vote === sign);
+        });
+    }
     updateRoundProgress();
 }
 
@@ -258,12 +326,33 @@ async function loadPair() {
     state.viewingHistory = false;
     state.pairVotes.clear();
     try {
-        const res = await fetch(API_BASE + '?action=pair');
+        // Если фильтр активен — отправляем POST со списком включённых путей.
+        // Иначе — обычный GET (все изображения участвуют).
+        let res;
+        if (state.filterActive && state.selectedPaths.size > 0) {
+            const fd = new URLSearchParams({
+                action: 'pair',
+                included: Array.from(state.selectedPaths).join('|'),
+            });
+            res = await fetch(API_BASE, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: fd.toString(),
+            });
+        } else {
+            res = await fetch(API_BASE + '?action=pair');
+        }
         const data = await res.json();
         if (data.error) {
             showToast(data.error, 'error');
             return;
         }
+        // Сервер сообщает, что в текущем фильтре все уникальные пары пройдены.
+        if (data.all_done) {
+            showAllDoneBanner(data);
+            return;
+        }
+        hideAllDoneBanner();
         showPair(data.left, data.right);
         resetCriteriaRows();
         $nextPairBtn.disabled = true;
@@ -273,6 +362,35 @@ async function loadPair() {
     } finally {
         setLoading(false);
     }
+}
+
+function showAllDoneBanner(data) {
+    const k = data.total_unique ?? 0;
+    const n = data.images ?? 0;
+    const scope = data.scope === 'filter'
+        ? 'По текущему фильтру'
+        : 'По всему набору';
+    $allDoneDesc.textContent =
+        `${scope} (${n} изображений → ${k} уникальных пар) все сравнения уже сделаны. ` +
+        `Чтобы продолжить — расширьте фильтр или завершите сессию.`;
+    $allDoneBanner.classList.remove('hidden');
+
+    // Прячем зону голосования и кнопку «Следующая пара».
+    $criteriaRows.classList.add('hidden');
+    document.querySelector('.round-controls')?.classList.add('hidden');
+    document.querySelector('.images-row')?.classList.add('hidden');
+    document.querySelector('.instruction')?.classList.add('hidden');
+
+    showToast('Все пары по фильтру пройдены', 'success');
+}
+
+function hideAllDoneBanner() {
+    if ($allDoneBanner.classList.contains('hidden')) return;
+    $allDoneBanner.classList.add('hidden');
+    $criteriaRows.classList.remove('hidden');
+    document.querySelector('.round-controls')?.classList.remove('hidden');
+    document.querySelector('.images-row')?.classList.remove('hidden');
+    document.querySelector('.instruction')?.classList.remove('hidden');
 }
 
 function showPair(left, right, readonly = false) {
@@ -312,32 +430,36 @@ function updateRoundProgress() {
 
 /* ---------- Голосование ---------- */
 
-async function submitCriterionVote(criterionId, sign) {
+/**
+ * Сначала отправляет раунд (батч голосов по критериям), затем загружает
+ * следующую пару. Если все критерии не оценены — отказывает.
+ */
+async function submitRoundAndLoadPair() {
+    if (state.isLoading) return;
     if (state.viewingHistory) {
-        showToast('Просмотр истории — голосование недоступно.', 'error');
+        showToast('Просмотр истории. Используйте навигацию для возврата.', 'error');
         return;
     }
     if (!state.currentLeft || !state.currentRight) return;
-    const session = state.sessions.find((s) => s.criterion_id === criterionId);
-    if (!session) return;
-
-    if (state.pairVotes.has(criterionId)) {
-        showToast('Этот критерий уже оценён в текущей паре. Перейдите к следующей.', 'error');
+    if (state.pairVotes.size !== state.sessions.length) {
+        showToast('Оцените все критерии перед переходом к следующей паре.', 'error');
         return;
     }
 
-    const row = document.querySelector(`.criterion-row[data-criterion-id="${criterionId}"]`);
-    row?.querySelectorAll('.btn-vote-mini').forEach((b) => {
-        b.disabled = true;
-    });
+    setLoading(true);
+    $nextPairBtn.disabled = true;
 
     try {
+        const votes = state.sessions.map((s) => ({
+            session_id: s.session_id,
+            sign: state.pairVotes.get(s.criterion_id),
+        }));
         const body = new URLSearchParams({
-            action: 'vote',
-            session_id: String(session.session_id),
+            action: 'submit_round',
+            nickname: state.nickname,
             left: state.currentLeft,
             right: state.currentRight,
-            sign,
+            votes: JSON.stringify(votes),
         });
         const res = await fetch(API_BASE, {
             method: 'POST',
@@ -347,44 +469,39 @@ async function submitCriterionVote(criterionId, sign) {
         const result = await res.json();
         if (result.error) {
             showToast(result.error, 'error');
-            row?.querySelectorAll('.btn-vote-mini').forEach((b) => { b.disabled = false; });
             return;
         }
 
-        state.pairVotes.set(criterionId, sign);
-        state.voteCount++;
+        state.voteCount += votes.length;
         SS.setItem('voteCount', String(state.voteCount));
         updateCounter();
 
-        if (row) {
-            row.classList.add('done');
-            row.querySelectorAll('.btn-vote-mini').forEach((b) => {
-                b.classList.toggle('active', b.dataset.vote === sign);
-                b.disabled = false;
-            });
-        }
-
-        // Добавляем запись в начало истории.
+        // Добавляем раунд в локальную историю в начало.
         state.history.unshift({
-            id: result.comparison_id,
+            id: result.round_id,
             number: result.number,
-            criterion_id: criterionId,
-            criterion_name: session.criterion_name,
             image_left: state.currentLeft,
             image_right: state.currentRight,
-            result: sign,
             is_undone: 0,
+            votes: state.sessions.map((s) => ({
+                criterion_id: s.criterion_id,
+                criterion_name: s.criterion_name,
+                sign: state.pairVotes.get(s.criterion_id),
+            })),
         });
-        if (state.history.length > HISTORY_LIMIT) state.history.pop();
         renderHistory();
 
         if (result.auto_backup) showToast('Автобэкап создан', 'success');
 
-        updateRoundProgress();
+        await loadPair();
     } catch (err) {
         console.error(err);
-        showToast('Не удалось отправить оценку.', 'error');
-        row?.querySelectorAll('.btn-vote-mini').forEach((b) => { b.disabled = false; });
+        showToast('Не удалось отправить раунд.', 'error');
+    } finally {
+        setLoading(false);
+        // Если в новой паре уже есть голоса (после loadPair их нет), кнопка
+        // обновится через updateRoundProgress.
+        updateRoundProgress();
     }
 }
 
@@ -398,7 +515,8 @@ async function loadHistory() {
         );
         const data = await res.json();
         if (data.error) return;
-        state.history = data.history || [];
+        // Новый формат: data.rounds. Каждый элемент — раунд с массивом votes.
+        state.history = data.rounds || [];
         if (typeof data.total === 'number') {
             state.voteCount = data.total;
             SS.setItem('voteCount', String(state.voteCount));
@@ -410,8 +528,21 @@ async function loadHistory() {
     }
 }
 
+/**
+ * Рендерит историю раундов. Каждый раунд — одна запись, в которой компактно
+ * отображаются результаты всех критериев. Отмена раунда = отмена всех его
+ * параметров.
+ */
 function renderHistory() {
     $historyList.innerHTML = '';
+    // Счётчик в шапке: «всего: N (отменено: M)».
+    const totalRounds = state.history.length;
+    const undoneRounds = state.history.filter((h) => h.is_undone).length;
+    if ($historyCount) {
+        $historyCount.textContent = undoneRounds > 0
+            ? `всего: ${totalRounds} (отменено: ${undoneRounds})`
+            : `всего: ${totalRounds}`;
+    }
     if (!state.history.length) {
         const empty = document.createElement('li');
         empty.className = 'history-empty';
@@ -419,43 +550,67 @@ function renderHistory() {
         $historyList.appendChild(empty);
         return;
     }
-    state.history.forEach((h) => {
+    state.history.forEach((round) => {
         const li = document.createElement('li');
-        li.className = 'history-item' + (h.is_undone ? ' undone' : '');
-        const numberLabel = h.number ? '#' + h.number : '✕';
-        const sign = h.result;
+        li.className = 'history-item history-round' + (round.is_undone ? ' undone' : '');
+        const numberLabel = round.number ? '#' + round.number : '✕';
+
+        // Краткая сводка голосов по критериям.
+        const votesHtml = (round.votes || []).map((v) => `
+            <span class="round-vote sign-${signClass(v.sign)}"
+                  title="${escapeHtml(v.criterion_name)}: ${v.sign}">
+                <span class="round-vote-name">${escapeHtml(shortCriterion(v.criterion_name))}</span>
+                <span class="round-vote-sign">${v.sign}</span>
+            </span>
+        `).join('');
+
         li.innerHTML = `
             <button class="history-show" title="Показать пару">
                 <span class="history-number">${numberLabel}</span>
                 <span class="history-pair">
-                    <span class="history-criterion">${escapeHtml(h.criterion_name || '')}</span>
                     <span class="history-route">
-                        <span class="history-path">${escapeHtml(shortPath(h.image_left))}</span>
-                        <span class="history-sign sign-${signClass(sign)}">${sign}</span>
-                        <span class="history-path">${escapeHtml(shortPath(h.image_right))}</span>
+                        <span class="history-path">${escapeHtml(shortPath(round.image_left))}</span>
+                        <span class="history-vs">vs</span>
+                        <span class="history-path">${escapeHtml(shortPath(round.image_right))}</span>
                     </span>
+                    <span class="round-votes">${votesHtml}</span>
                 </span>
             </button>
-            ${h.is_undone
+            ${round.is_undone
                 ? '<span class="history-undone-tag">отменено</span>'
-                : `<button class="history-undo" title="Отменить">↩</button>`
+                : `<button class="history-undo" title="Отменить раунд">↩</button>`
             }
         `;
         const showBtn = li.querySelector('.history-show');
         showBtn.addEventListener('click', () => {
-            showPair(h.image_left, h.image_right, true);
+            showPair(round.image_left, round.image_right, true);
             highlightHistoryItem(li);
-            showToast('Просмотр сравнения #' + (h.number || '—'), 'success');
+            showToast('Просмотр раунда #' + (round.number || '—'), 'success');
         });
         const undoBtn = li.querySelector('.history-undo');
         if (undoBtn) {
             undoBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                undoComparison(h.id);
+                undoRound(round.id);
             });
         }
         $historyList.appendChild(li);
     });
+}
+
+/**
+ * Сокращает имя критерия для компактного отображения в истории.
+ * «Общее качество» → «Общ.», «Резкость» → «Рез.», и т.д.
+ */
+function shortCriterion(name) {
+    if (!name) return '';
+    const map = {
+        'Общее качество': 'Общ.',
+        'Резкость': 'Рез.',
+        'Контрастность': 'Конт.',
+        'Артефакты': 'Арт.',
+    };
+    return map[name] || name.slice(0, 4) + '.';
 }
 
 function highlightHistoryItem(el) {
@@ -475,12 +630,12 @@ function signClass(s) {
     return 'equal';
 }
 
-async function undoComparison(comparisonId) {
+async function undoRound(roundId) {
     setLoading(true);
     try {
         const fd = new URLSearchParams({
-            action: 'undo',
-            comparison_id: String(comparisonId),
+            action: 'undo_round',
+            round_id: String(roundId),
             nickname: state.nickname,
         });
         const res = await fetch(API_BASE, {
@@ -493,13 +648,14 @@ async function undoComparison(comparisonId) {
             showToast(data.error, 'error');
             return;
         }
-        showToast('Сравнение отменено', 'success');
-        const item = state.history.find((h) => h.id === comparisonId);
+        showToast('Раунд отменён', 'success');
+        const item = state.history.find((h) => h.id === roundId);
         if (item) {
             item.is_undone = 1;
             item.number = null;
+            // Все голоса в раунде также считаются отменёнными.
+            state.voteCount = Math.max(0, state.voteCount - (item.votes?.length || 0));
         }
-        if (state.voteCount > 0) state.voteCount--;
         SS.setItem('voteCount', String(state.voteCount));
         updateCounter();
         renderHistory();
@@ -893,6 +1049,242 @@ function toggleGraphFullscreen() {
     });
 }
 
+/* ---------- Фильтр изображений ---------- */
+
+/**
+ * Открытие модала. Если у пользователя ещё нет применённого фильтра —
+ * чекбоксы открываются ПУСТЫМИ (хотя по факту все изображения участвуют —
+ * это просто стартовый «холст» для выбора). Если фильтр уже применён —
+ * показываем сохранённый набор.
+ */
+async function openFilterModal() {
+    $filterModal.classList.remove('hidden');
+    if (!state.treeCache) {
+        $filterTree.innerHTML = '<div class="filter-loading">Загрузка…</div>';
+        try {
+            const res = await fetch(API_BASE + '?action=tree');
+            const data = await res.json();
+            if (data.error) {
+                showToast(data.error, 'error');
+                closeFilterModal();
+                return;
+            }
+            state.treeCache = data;
+        } catch (err) {
+            console.error(err);
+            showToast('Не удалось загрузить дерево.', 'error');
+            closeFilterModal();
+            return;
+        }
+    }
+    // Локальный (модальный) рабочий набор — отделён от state.selectedPaths,
+    // чтобы можно было «Отмена» без побочных эффектов.
+    if (state.filterActive) {
+        state.workingSelected = new Set(state.selectedPaths);
+    } else {
+        // Дефолт: ничего не выбрано.
+        state.workingSelected = new Set();
+    }
+    renderFilterTree();
+}
+
+function closeFilterModal() {
+    $filterModal.classList.add('hidden');
+}
+
+/**
+ * Рендерит дерево: <details>/<summary> для папок (свёрнуты по умолчанию),
+ * чекбоксы на каждом узле. Папка автоматически отображает indeterminate-
+ * состояние, когда часть её потомков выключена.
+ */
+function renderFilterTree() {
+    $filterTree.innerHTML = '';
+    const root = buildFilterNode(state.treeCache, '');
+    $filterTree.appendChild(root);
+    updateAllFolderStates();
+    updateFilterCount();
+}
+
+/**
+ * Рекурсивно строит DOM-узел.
+ */
+function buildFilterNode(node, parentPath) {
+    if (node.type === 'file') {
+        const li = document.createElement('div');
+        li.className = 'filter-item filter-file';
+        li.dataset.path = node.path;
+        // Файл «включён», если он в рабочем наборе. По дефолту (фильтр не
+        // применялся) набор пуст — все чекбоксы пустые.
+        const checked = state.workingSelected.has(node.path);
+        li.innerHTML = `
+            <label class="filter-row">
+                <input type="checkbox" class="filter-cb" ${checked ? 'checked' : ''}>
+                <span class="filter-icon">🖼</span>
+                <span class="filter-label" title="${escapeHtml(node.path)}">${escapeHtml(node.name)}</span>
+            </label>
+        `;
+        const cb = li.querySelector('input');
+        cb.addEventListener('change', (e) => {
+            handleFileToggle(node.path, e.target.checked);
+            updateAllFolderStates();
+            updateFilterCount();
+        });
+        return li;
+    }
+
+    // Папка. Используем обычный <div> со своим data-expanded, чтобы
+    // раскрытие управлялось ТОЛЬКО кнопкой-треугольником, а клик по имени
+    // папки не вызывал её раскрытия (поведение, как в проводнике).
+    const folder = document.createElement('div');
+    folder.className = 'filter-item filter-folder';
+    folder.dataset.folder = parentPath ? parentPath + '/' + node.name : node.name;
+    folder.dataset.expanded = 'false';
+
+    const row = document.createElement('div');
+    row.className = 'filter-row filter-folder-row';
+    row.innerHTML = `
+        <button type="button" class="filter-expand-btn"
+                aria-expanded="false" aria-label="Раскрыть">▶</button>
+        <input type="checkbox" class="filter-cb folder-cb">
+        <span class="filter-icon">📁</span>
+        <span class="filter-label">${escapeHtml(node.name)}</span>
+        <span class="filter-folder-meta"></span>
+    `;
+    folder.appendChild(row);
+
+    const childrenWrap = document.createElement('div');
+    childrenWrap.className = 'filter-children';
+    childrenWrap.hidden = true;
+    (node.children || []).forEach((child) => {
+        childrenWrap.appendChild(buildFilterNode(child, folder.dataset.folder));
+    });
+    folder.appendChild(childrenWrap);
+
+    // Кнопка-треугольник — единственный триггер раскрытия.
+    const expandBtn = row.querySelector('.filter-expand-btn');
+    expandBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleFolderOpen(folder, !isFolderOpen(folder));
+    });
+
+    // Чекбокс папки переключает все вложенные файлы.
+    const folderCb = row.querySelector('input');
+    folderCb.addEventListener('click', (e) => e.stopPropagation());
+    folderCb.addEventListener('change', (e) => {
+        const enabled = e.target.checked;
+        folder.querySelectorAll('.filter-file').forEach((fileEl) => {
+            const cb = fileEl.querySelector('input');
+            cb.checked = enabled;
+            handleFileToggle(fileEl.dataset.path, enabled);
+        });
+        updateAllFolderStates();
+        updateFilterCount();
+    });
+
+    return folder;
+}
+
+function isFolderOpen(folder) {
+    return folder.dataset.expanded === 'true';
+}
+
+function toggleFolderOpen(folder, open) {
+    folder.dataset.expanded = open ? 'true' : 'false';
+    const childrenWrap = folder.querySelector(':scope > .filter-children');
+    if (childrenWrap) childrenWrap.hidden = !open;
+    const btn = folder.querySelector(':scope > .filter-row > .filter-expand-btn');
+    if (btn) {
+        btn.textContent = open ? '▼' : '▶';
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        btn.setAttribute('aria-label', open ? 'Свернуть' : 'Раскрыть');
+    }
+}
+
+function handleFileToggle(path, enabled) {
+    // Изменения копятся в рабочем наборе модала; в state.selectedPaths
+    // они переносятся только по «Применить».
+    if (enabled) state.workingSelected.add(path);
+    else state.workingSelected.delete(path);
+}
+
+/**
+ * Пересчитывает состояния (checked / indeterminate) у всех папок исходя из
+ * состояния файлов внутри.
+ */
+function updateAllFolderStates() {
+    $filterTree.querySelectorAll('.filter-folder').forEach((folder) => {
+        const fileCbs = folder.querySelectorAll('.filter-file input');
+        let on = 0, off = 0;
+        fileCbs.forEach((cb) => cb.checked ? on++ : off++);
+        const folderCb = folder.querySelector(':scope > summary .folder-cb');
+        const meta = folder.querySelector(':scope > summary .filter-folder-meta');
+        if (on === 0) {
+            folderCb.checked = false;
+            folderCb.indeterminate = false;
+        } else if (off === 0) {
+            folderCb.checked = true;
+            folderCb.indeterminate = false;
+        } else {
+            folderCb.checked = false;
+            folderCb.indeterminate = true;
+        }
+        if (meta) meta.textContent = `${on} / ${on + off}`;
+    });
+}
+
+function updateFilterCount() {
+    const allFiles = $filterTree.querySelectorAll('.filter-file');
+    const enabled = Array.from(allFiles).filter(
+        (el) => el.querySelector('input').checked
+    ).length;
+    $filterCount.textContent = `Включено: ${enabled} / ${allFiles.length}`;
+}
+
+function bulkSetFilter(exclude) {
+    $filterTree.querySelectorAll('.filter-file').forEach((fileEl) => {
+        const cb = fileEl.querySelector('input');
+        cb.checked = !exclude;
+        handleFileToggle(fileEl.dataset.path, !exclude);
+    });
+    updateAllFolderStates();
+    updateFilterCount();
+}
+
+function bulkExpandFilter(open) {
+    $filterTree.querySelectorAll('.filter-folder').forEach((f) => {
+        toggleFolderOpen(f, open);
+    });
+}
+
+async function applyFilter() {
+    // Если ничего не выбрано — фильтр снимается (дефолтное состояние:
+    // все изображения участвуют).
+    if (state.workingSelected.size === 0) {
+        state.filterActive = false;
+        state.selectedPaths = new Set();
+        localStorage.setItem('filterActive', '0');
+        localStorage.setItem('selectedPaths', '[]');
+        closeFilterModal();
+        showToast('Фильтр снят: участвуют все изображения', 'success');
+    } else {
+        state.filterActive = true;
+        state.selectedPaths = new Set(state.workingSelected);
+        localStorage.setItem('filterActive', '1');
+        localStorage.setItem(
+            'selectedPaths',
+            JSON.stringify(Array.from(state.selectedPaths))
+        );
+        closeFilterModal();
+        showToast(
+            `Фильтр применён: участвуют ${state.selectedPaths.size} изображений`,
+            'success'
+        );
+    }
+    if ($comparisonScreen.classList.contains('active')) {
+        await loadPair();
+    }
+}
+
 /* ---------- Лайтбокс изображений ---------- */
 
 const lb = {
@@ -984,10 +1376,15 @@ function handleLightboxDragEnd() {
 /* ---------- Горячие клавиши ---------- */
 
 function handleKeyboard(e) {
-    // Esc закрывает лайтбокс независимо от экрана.
+    // Esc закрывает лайтбокс / модал фильтра независимо от экрана.
     if (e.key === 'Escape' && !$lightbox.classList.contains('hidden')) {
         e.preventDefault();
         closeLightbox();
+        return;
+    }
+    if (e.key === 'Escape' && !$filterModal.classList.contains('hidden')) {
+        e.preventDefault();
+        closeFilterModal();
         return;
     }
 
@@ -998,7 +1395,7 @@ function handleKeyboard(e) {
         const last = state.history.find((h) => !h.is_undone);
         if (last) {
             e.preventDefault();
-            undoComparison(last.id);
+            undoRound(last.id);
         }
     }
 }

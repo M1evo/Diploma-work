@@ -1,0 +1,210 @@
+{
+  "sharpness": [
+    {
+      "level": 0,
+      "rel_path": "./synthetic/sharpness/img_0.png",
+      "expected_rank": 1
+    },
+    {
+      "level": 1,
+      "rel_path": "./synthetic/sharpness/img_1.png",
+      "expected_rank": 2
+    },
+    {
+      "level": 2,
+      "rel_path": "./synthetic/sharpness/img_2.png",
+      "expected_rank": 3
+    },
+    {
+      "level": 3,
+      "rel_path": "./synthetic/sharpness/img_3.png",
+      "expected_rank": 4
+    },
+    {
+      "level": 4,
+      "rel_path": "./synthetic/sharpness/img_4.png",
+      "expected_rank": 5
+    },
+    {
+      "level": 5,
+      "rel_path": "./synthetic/sharpness/img_5.png",
+      "expected_rank": 6
+    },
+    {
+      "level": 6,
+      "rel_path": "./synthetic/sharpness/img_6.png",
+      "expected_rank": 7
+    },
+    {
+      "level": 7,
+      "rel_path": "./synthetic/sharpness/img_7.png",
+      "expected_rank": 8
+    },
+    {
+      "level": 8,
+      "rel_path": "./synthetic/sharpness/img_8.png",
+      "expected_rank": 9
+    },
+    {
+      "level": 9,
+      "rel_path": "./synthetic/sharpness/img_9.png",
+      "expected_rank": 10
+    }
+  ],
+  "contrast": [
+    {
+      "level": 0,
+      "rel_path": "./synthetic/contrast/img_0.png",
+      "expected_rank": 1
+    },
+    {
+      "level": 1,
+      "rel_path": "./synthetic/contrast/img_1.png",
+      "expected_rank": 2
+    },
+    {
+      "level": 2,
+      "rel_path": "./synthetic/contrast/img_2.png",
+      "expected_rank": 3
+    },
+    {
+      "level": 3,
+      "rel_path": "./synthetic/contrast/img_3.png",
+      "expected_rank": 4
+    },
+    {
+      "level": 4,
+      "rel_path": "./synthetic/contrast/img_4.png",
+      "expected_rank": 5
+    },
+    {
+      "level": 5,
+      "rel_path": "./synthetic/contrast/img_5.png",
+      "expected_rank": 6
+    },
+    {
+      "level": 6,
+      "rel_path": "./synthetic/contrast/img_6.png",
+      "expected_rank": 7
+    },
+    {
+      "level": 7,
+      "rel_path": "./synthetic/contrast/img_7.png",
+      "expected_rank": 8
+    },
+    {
+      "level": 8,
+      "rel_path": "./synthetic/contrast/img_8.png",
+      "expected_rank": 9
+    },
+    {
+      "level": 9,
+      "rel_path": "./synthetic/contrast/img_9.png",
+      "expected_rank": 10
+    }
+  ],
+  "artifacts": [
+    {
+      "level": 0,
+      "rel_path": "./synthetic/artifacts/img_0.png",
+      "expected_rank": 1
+    },
+    {
+      "level": 1,
+      "rel_path": "./synthetic/artifacts/img_1.png",
+      "expected_rank": 2
+    },
+    {
+      "level": 2,
+      "rel_path": "./synthetic/artifacts/img_2.png",
+      "expected_rank": 3
+    },
+    {
+      "level": 3,
+      "rel_path": "./synthetic/artifacts/img_3.png",
+      "expected_rank": 4
+    },
+    {
+      "level": 4,
+      "rel_path": "./synthetic/artifacts/img_4.png",
+      "expected_rank": 5
+    },
+    {
+      "level": 5,
+      "rel_path": "./synthetic/artifacts/img_5.png",
+      "expected_rank": 6
+    },
+    {
+      "level": 6,
+      "rel_path": "./synthetic/artifacts/img_6.png",
+      "expected_rank": 7
+    },
+    {
+      "level": 7,
+      "rel_path": "./synthetic/artifacts/img_7.png",
+      "expected_rank": 8
+    },
+    {
+      "level": 8,
+      "rel_path": "./synthetic/artifacts/img_8.png",
+      "expected_rank": 9
+    },
+    {
+      "level": 9,
+      "rel_path": "./synthetic/artifacts/img_9.png",
+      "expected_rank": 10
+    }
+  ],
+  "overall": [
+    {
+      "level": 0,
+      "rel_path": "./synthetic/overall/img_0.png",
+      "expected_rank": 1
+    },
+    {
+      "level": 1,
+      "rel_path": "./synthetic/overall/img_1.png",
+      "expected_rank": 2
+    },
+    {
+      "level": 2,
+      "rel_path": "./synthetic/overall/img_2.png",
+      "expected_rank": 3
+    },
+    {
+      "level": 3,
+      "rel_path": "./synthetic/overall/img_3.png",
+      "expected_rank": 4
+    },
+    {
+      "level": 4,
+      "rel_path": "./synthetic/overall/img_4.png",
+      "expected_rank": 5
+    },
+    {
+      "level": 5,
+      "rel_path": "./synthetic/overall/img_5.png",
+      "expected_rank": 6
+    },
+    {
+      "level": 6,
+      "rel_path": "./synthetic/overall/img_6.png",
+      "expected_rank": 7
+    },
+    {
+      "level": 7,
+      "rel_path": "./synthetic/overall/img_7.png",
+      "expected_rank": 8
+    },
+    {
+      "level": 8,
+      "rel_path": "./synthetic/overall/img_8.png",
+      "expected_rank": 9
+    },
+    {
+      "level": 9,
+      "rel_path": "./synthetic/overall/img_9.png",
+      "expected_rank": 10
+    }
+  ]
+}
